@@ -1,0 +1,10 @@
+# 真实配置（含密钥），不入库
+mewcode.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.mewcode/
