@@ -1,6 +1,14 @@
 """沙箱与授权公共类型。"""
 
-from .models import AccessGrant, AccessMode, AccessRequest, ApprovalScope, SandboxRequest
+from .models import (
+    AccessGrant,
+    AccessMode,
+    AccessRequest,
+    ApprovalScope,
+    SandboxDiagnostic,
+    SandboxRequest,
+    SandboxState,
+)
 from .permissions import PermissionStore, resolve_path, resolve_target
 from .base import Sandbox, SandboxFactory
 
@@ -11,6 +19,8 @@ __all__ = [
     "ApprovalScope",
     "PermissionStore",
     "SandboxRequest",
+    "SandboxDiagnostic",
+    "SandboxState",
     "Sandbox",
     "SandboxFactory",
     "resolve_path",

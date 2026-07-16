@@ -37,10 +37,11 @@ class ToolExecutor:
         workspace: str | Path,
         approve: ApprovalHandler | None = None,
         timeout: float = 20.0,
+        temp_dir: str | Path | None = None,
     ) -> None:
         self._registry = registry
         self._sandbox = sandbox
-        self._permissions = PermissionStore(workspace)
+        self._permissions = PermissionStore(workspace, temp_dir)
         self._approve = approve
         self._timeout = timeout
         self._approval_lock = asyncio.Lock()

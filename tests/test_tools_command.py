@@ -1,12 +1,17 @@
 from pathlib import Path
+import platform
 
 from mewcode.tools.command import run_command
 from mewcode.tools.models import ToolCall
 
 
 def test_command_returns_stdout_stderr_and_exit_code(tmp_path: Path):
+    if platform.system() == "Windows":
+        command = "Write-Output 'ok'; [Console]::Error.WriteLine('warn')"
+    else:
+        command = "echo ok; echo warn >&2"
     result = run_command(
-        ToolCall("1", "run_command", {"command": "echo ok; echo warn >&2", "cwd": "."}),
+        ToolCall("1", "run_command", {"command": command, "cwd": "."}),
         tmp_path,
     )
     assert result.ok

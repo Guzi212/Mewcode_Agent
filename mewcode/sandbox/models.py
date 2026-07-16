@@ -21,6 +21,27 @@ class ApprovalScope(str, Enum):
     SESSION = "session"
 
 
+class SandboxState(str, Enum):
+    """宿主沙箱当前是否可以安全执行工具。"""
+
+    READY = "ready"
+    SETUP_REQUIRED = "setup_required"
+    UNSUPPORTED = "unsupported"
+    BROKEN = "broken"
+
+
+@dataclass(frozen=True)
+class SandboxDiagnostic:
+    """供 CLI、TUI 和测试共用的脱敏沙箱状态。"""
+
+    state: SandboxState
+    backend: str
+    code: str
+    message: str
+    remediation: str = ""
+    component_version: str | None = None
+
+
 @dataclass(frozen=True)
 class AccessRequest:
     tool_name: str

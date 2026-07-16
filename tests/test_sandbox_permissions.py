@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from mewcode.sandbox import AccessGrant, AccessMode, ApprovalScope, PermissionStore
 
@@ -32,7 +33,12 @@ def test_symlink_target_is_checked_against_real_path(tmp_path: Path):
     external = tmp_path / "external.txt"
     external.write_text("secret")
     link = workspace / "outside-link"
-    link.symlink_to(external)
+    try:
+        link.symlink_to(external)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("当前 Windows 会话没有创建符号链接权限")
+        raise
     store = PermissionStore(workspace, tmp_path / "temp")
     (tmp_path / "temp").mkdir()
 

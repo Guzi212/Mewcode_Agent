@@ -17,6 +17,7 @@ from .messages import (
 )
 from .prompts import EXECUTE_PLAN_PROMPT, PLAN_MODE_PROMPT, SYSTEM_PROMPT
 from .providers import Provider
+from .shell import platform_context
 from .tools.base import ToolSafety
 from .tools.executor import ToolExecutor
 from .tools.models import (
@@ -99,9 +100,9 @@ class AgentLoop:
         self._cancel_requested = asyncio.Event()
         try:
             self.conversation.add_user(parsed.task_text)
-            system_prompt = SYSTEM_PROMPT
+            system_prompt = f"{SYSTEM_PROMPT.rstrip()}\n\n{platform_context()}"
             if parsed.mode == AgentMode.PLAN:
-                system_prompt = f"{SYSTEM_PROMPT.rstrip()}\n\n{PLAN_MODE_PROMPT.strip()}"
+                system_prompt = f"{system_prompt.rstrip()}\n\n{PLAN_MODE_PROMPT.strip()}"
             unknown_only_rounds = 0
 
             for iteration in range(1, self._max_iterations + 1):

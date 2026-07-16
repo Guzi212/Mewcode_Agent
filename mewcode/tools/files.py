@@ -26,9 +26,13 @@ def _limit(text: str) -> tuple[str, bool]:
 
 def read_file(call: ToolCall, workspace: Path) -> ToolResult:
     path = worker_path(require_string(call.arguments, "path"), workspace)
-    if not path.is_file():
-        return ToolResult.failure(call, "file_not_found", f"文件不存在或不是普通文件：{path}")
     try:
+        if not path.is_file():
+            return ToolResult.failure(
+                call,
+                "file_not_found",
+                f"文件不存在或不是普通文件：{path}",
+            )
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError:
         return ToolResult.failure(call, "not_text", f"文件不是 UTF-8 文本：{path}")

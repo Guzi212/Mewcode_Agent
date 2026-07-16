@@ -7,6 +7,8 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Label, Markdown, Static, TextArea
 
+from ..sandbox import SandboxDiagnostic, SandboxState
+
 CAT = r"""   /\_/\
   ( o.o )   MewCode
    > ^ <"""
@@ -31,6 +33,15 @@ class ReadyLine(Static):
             "[dim]已就绪。输入消息开始对话，/exit 或 Ctrl+C 退出。[/dim]",
             classes="ready",
         )
+
+    def set_sandbox(self, diagnostic: SandboxDiagnostic) -> None:
+        if diagnostic.state is SandboxState.READY:
+            text = f"沙箱 {diagnostic.backend} 已就绪"
+        elif diagnostic.state is SandboxState.SETUP_REQUIRED:
+            text = "纯对话可用；工具沙箱待准备。运行 mewcode sandbox setup"
+        else:
+            text = "纯对话可用；工具沙箱不可用。运行 mewcode sandbox diagnose"
+        self.update(f"[dim]{text}。/exit 或 Ctrl+C 退出。[/dim]")
 
 
 class UserMessage(Static):
@@ -136,6 +147,7 @@ class StatusBar(Horizontal):
         self._model = ""
         self._input_tokens: int | None = None
         self._output_tokens: int | None = None
+        self._sandbox = "沙箱检查中"
 
     def compose(self):
         yield self._left
@@ -153,8 +165,13 @@ class StatusBar(Horizontal):
         self._output_tokens = output_tokens
         self._render_status()
 
+    def set_sandbox(self, diagnostic: SandboxDiagnostic) -> None:
+        self._sandbox = f"{diagnostic.backend}/{diagnostic.state.value}"
+        self._render_status()
+
     def _render_status(self) -> None:
-        self._left.update(self._provider_name)
+        left = " · ".join(value for value in (self._provider_name, self._sandbox) if value)
+        self._left.update(left)
         input_text = "?" if self._input_tokens is None else str(self._input_tokens)
         output_text = "?" if self._output_tokens is None else str(self._output_tokens)
         self._right.update(

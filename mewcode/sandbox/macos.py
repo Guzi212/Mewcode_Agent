@@ -11,7 +11,7 @@ import sys
 
 from ..tools.models import ToolResult
 from .base import Sandbox
-from .models import SandboxRequest
+from .models import SandboxDiagnostic, SandboxRequest, SandboxState
 
 
 class MacOSSandbox(Sandbox):
@@ -165,3 +165,19 @@ class MacOSSandbox(Sandbox):
     def _clean_env() -> dict[str, str]:
         allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
         return {key: value for key, value in __import__("os").environ.items() if key in allowed}
+
+    def diagnose(self) -> SandboxDiagnostic:
+        if shutil.which("sandbox-exec") is None:
+            return SandboxDiagnostic(
+                SandboxState.BROKEN,
+                "macos-seatbelt",
+                "component_missing",
+                "未找到 macOS Seatbelt 启动器",
+                "确认当前系统为受支持的 macOS 13 或更高版本",
+            )
+        return SandboxDiagnostic(
+            SandboxState.READY,
+            "macos-seatbelt",
+            "ready",
+            "macOS Seatbelt 沙箱可用",
+        )
