@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 import respx
 
 from mewcode.config import ProviderConfig
@@ -54,8 +55,8 @@ REASONER_SSE = (
 
 
 @respx.mock
-async def test_openai_drops_reasoning_content():
-    """DeepSeek reasoner 等推理模型的思考内容（reasoning_content）应被丢弃。"""
+async def test_openai_keeps_reasoning_content_out_of_text():
+    """兼容端点的 reasoning_content 不得混入正文。"""
     respx.post("https://api.deepseek.com/chat/completions").mock(
         return_value=httpx.Response(200, text=REASONER_SSE)
     )
@@ -209,3 +210,132 @@ async def test_openai_missing_usage_fields_stay_unknown():
     assert usage is not None
     assert usage.input_tokens is None
     assert usage.output_tokens is None
+
+
+@pytest.mark.parametrize(
+    ("thinking", "expected"),
+    [
+        (True, {"type": "enabled"}),
+        (False, {"type": "disabled"}),
+        (None, None),
+    ],
+)
+@respx.mock
+async def test_openai_thinking_extension_is_explicitly_configured(
+    thinking, expected
+):
+    route = respx.post("https://compatible.local/chat/completions").mock(
+        return_value=httpx.Response(200, text="data: [DONE]\n\n")
+    )
+    prov = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="vendor-reasoner",
+            api_key="k",
+            base_url="https://compatible.local",
+            thinking=thinking,
+        )
+    )
+
+    [event async for event in prov.stream([Message(Role.USER, "hi")])]
+
+    body = json.loads(route.calls.last.request.content)
+    if expected is None:
+        assert "thinking" not in body
+    else:
+        assert body["thinking"] == expected
+
+
+@respx.mock
+async def test_openai_compatible_reasoning_uses_internal_event():
+    sse = (
+        'data: {"choices":[{"delta":{"reasoning_content":"SECRET-"}}]}\n\n'
+        'data: {"choices":[{"delta":{"reasoning_content":"REASONING"}}]}\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    respx.post("https://compatible.local/chat/completions").mock(
+        return_value=httpx.Response(200, text=sse)
+    )
+    prov = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="vendor-reasoner",
+            api_key="k",
+            base_url="https://compatible.local",
+        )
+    )
+
+    events = [event async for event in prov.stream([Message(Role.USER, "读取")])]
+
+    reasoning = "".join(
+        event.reasoning
+        for event in events
+        if event.kind == StreamEventKind.REASONING_DELTA
+    )
+    assert reasoning == "SECRET-REASONING"
+    assert not any("SECRET" in event.text for event in events)
+    assert any(event.kind == StreamEventKind.TOOL_CALL for event in events)
+
+
+def test_openai_serializes_reasoning_for_tool_call_continuation():
+    call = ToolCall("call-1", "read_file", {"path": "README.md"})
+    history = [
+        ConversationItem.assistant(
+            "",
+            [call],
+            reasoning_content="SECRET-REASONING",
+        ),
+        ConversationItem.tool_results(
+            [ToolResult("call-1", "read_file", True, "ok", "完成")]
+        ),
+    ]
+
+    messages = _serialize(history)
+
+    assert messages[0]["content"] == ""
+    assert messages[0]["reasoning_content"] == "SECRET-REASONING"
+    assert messages[0]["tool_calls"][0]["id"] == "call-1"
+    assert messages[1]["role"] == "tool"
+
+
+def test_openai_plain_tool_call_keeps_existing_null_content():
+    call = ToolCall("call-1", "read_file", {"path": "README.md"})
+
+    messages = _serialize([ConversationItem.assistant("", [call])])
+
+    assert messages[0]["content"] is None
+    assert "reasoning_content" not in messages[0]
+
+
+@respx.mock
+async def test_openai_http_error_redacts_sensitive_fields():
+    respx.post("https://compatible.local/chat/completions").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": {"message": "bad request"},
+                "reasoning_content": "SECRET-REASONING",
+                "api_key": "SENTINEL-KEY",
+            },
+        )
+    )
+    prov = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="vendor-reasoner",
+            api_key="SENTINEL-KEY",
+            base_url="https://compatible.local",
+            thinking=True,
+        )
+    )
+
+    events = [event async for event in prov.stream([Message(Role.USER, "hi")])]
+
+    error = next(event.text for event in events if event.kind == StreamEventKind.ERROR)
+    assert "SECRET-REASONING" not in error
+    assert "SENTINEL-KEY" not in error
+    assert "bad request" in error

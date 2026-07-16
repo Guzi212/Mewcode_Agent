@@ -14,6 +14,7 @@ from mewcode.sandbox import (
     SandboxState,
 )
 from mewcode.sandbox.windows import WindowsSandbox
+from mewcode.sandbox.windows_protocol import PROTOCOL_VERSION
 from mewcode.tools.models import ToolCall
 
 
@@ -45,6 +46,14 @@ def _request(tmp_path):
     return SandboxRequest(call, tmp_path, (grant,))
 
 
+def test_native_request_uses_actual_mewcode_package_root(tmp_path):
+    native = WindowsSandbox._native_request(_request(tmp_path), 1)
+
+    package_root = Path(native.python_package_root)
+    assert package_root.name == "mewcode"
+    assert (package_root / "tool_worker.py").is_file()
+
+
 def test_diagnose_returns_component_failure_without_starting_helper(monkeypatch):
     if platform.system() != "Windows":
         pytest.skip("Windows 后端平台检查")
@@ -63,7 +72,7 @@ def test_management_diagnostic_is_strict(monkeypatch):
     if platform.system() != "Windows":
         pytest.skip("Windows 后端平台检查")
     raw = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "state": "setup_required",
         "backend": "windows-appcontainer",
         "code": "setup_required",
@@ -119,7 +128,7 @@ class FakeProcess:
 
 def _completed():
     raw = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "request_id": "call-1",
         "status": "completed",
         "worker_result": {

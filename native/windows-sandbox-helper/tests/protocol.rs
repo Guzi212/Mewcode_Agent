@@ -5,12 +5,14 @@ use mewcode_windows_sandbox::protocol::{
 fn run_request(extra: &str) -> Vec<u8> {
     format!(
         concat!(
-            "{{\"protocol_version\":1,\"operation\":\"run\",",
+            "{{\"protocol_version\":{protocol_version},\"operation\":\"run\",",
             "\"request_id\":\"call-1\",\"timeout_ms\":20000,",
             "\"python_executable\":\"D:\\\\Python\\\\python.exe\",",
+            "\"python_package_root\":\"D:\\\\project\\\\mewcode\",",
             "\"workspace\":\"D:\\\\project\",\"grants\":[],",
             "\"worker_payload\":{{}}{extra}}}\n"
         ),
+        protocol_version = PROTOCOL_VERSION,
         extra = extra
     )
     .into_bytes()
@@ -23,7 +25,8 @@ fn parses_all_supported_operations() {
         ("diagnose", Request::Diagnose),
         ("setup", Request::Setup),
     ] {
-        let input = format!("{{\"protocol_version\":1,\"operation\":\"{operation}\"}}\n");
+        let input =
+            format!("{{\"protocol_version\":{PROTOCOL_VERSION},\"operation\":\"{operation}\"}}\n");
         assert_eq!(parse_request(input.as_bytes()).unwrap(), expected);
     }
     assert!(matches!(
@@ -34,14 +37,20 @@ fn parses_all_supported_operations() {
 
 #[test]
 fn rejects_unknown_fields_and_operations() {
-    let extra = b"{\"protocol_version\":1,\"operation\":\"version\",\"extra\":true}\n";
+    let extra = format!(
+        "{{\"protocol_version\":{PROTOCOL_VERSION},\"operation\":\"version\",\"extra\":true}}\n"
+    );
     assert_eq!(
-        parse_request(extra).unwrap_err().code,
+        parse_request(extra.as_bytes()).unwrap_err().code,
         "sandbox_protocol_error"
     );
 
-    let unknown = b"{\"protocol_version\":1,\"operation\":\"execute\"}\n";
-    assert_eq!(parse_request(unknown).unwrap_err().message, "未知操作");
+    let unknown =
+        format!("{{\"protocol_version\":{PROTOCOL_VERSION},\"operation\":\"execute\"}}\n");
+    assert_eq!(
+        parse_request(unknown.as_bytes()).unwrap_err().message,
+        "未知操作"
+    );
 }
 
 #[test]

@@ -50,8 +50,42 @@ def test_single_provider(tmp_path):
     cfg = load_config(p)
     assert cfg.single() is not None
     assert cfg.single().name == "a"
-    assert cfg.single().thinking is False
+    assert cfg.single().thinking is None
     assert cfg.agent_max_iterations == DEFAULT_AGENT_MAX_ITERATIONS
+
+
+def test_explicit_false_thinking_is_preserved(tmp_path):
+    p = _write(
+        tmp_path,
+        """
+        providers:
+          - name: a
+            protocol: openai
+            model: m1
+            api_key: k1
+            thinking: false
+        """,
+    )
+
+    assert load_config(p).single().thinking is False
+
+
+@pytest.mark.parametrize("value", ['"true"', "1", "[]", "{}"])
+def test_invalid_thinking_type_is_rejected(tmp_path, value):
+    p = _write(
+        tmp_path,
+        f"""
+        providers:
+          - name: a
+            protocol: openai
+            model: m1
+            api_key: k1
+            thinking: {value}
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="thinking"):
+        load_config(p)
 
 
 @pytest.mark.parametrize("value", [0, -1, "20", True, None])

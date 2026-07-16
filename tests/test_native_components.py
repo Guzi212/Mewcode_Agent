@@ -10,6 +10,7 @@ from mewcode.sandbox.native_components import (
     NativeComponentError,
     NativeComponentResolver,
 )
+from mewcode.sandbox.windows_protocol import PROTOCOL_VERSION
 
 
 def _fake_pe(machine: int = 0x8664) -> bytes:
@@ -26,7 +27,7 @@ def _component(root: Path, *, development: bool, machine: int = 0x8664, **change
     helper = root / HELPER_FILENAME
     helper.write_bytes(_fake_pe(machine))
     manifest = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "app_version": "0.1.0",
         "helper_version": "0.1.0",
         "target": "windows-x86_64",
@@ -48,7 +49,9 @@ def _resolver(tmp_path: Path, monkeypatch, *, packaged=False):
         development_root=development,
         app_version="0.1.0",
     )
-    monkeypatch.setattr(resolver, "_probe_version", lambda _: (1, "0.1.0"))
+    monkeypatch.setattr(
+        resolver, "_probe_version", lambda _: (PROTOCOL_VERSION, "0.1.0")
+    )
     return resolver, helper, root
 
 
@@ -72,7 +75,7 @@ def test_resolver_rejects_tampered_helper(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("changes", "code"),
     [
-        ({"protocol_version": 2}, "component_mismatch"),
+        ({"protocol_version": PROTOCOL_VERSION + 1}, "component_mismatch"),
         ({"app_version": "9.0.0"}, "component_mismatch"),
         ({"target": "windows-arm64"}, "component_mismatch"),
         ({"development": False}, "component_mismatch"),
@@ -100,7 +103,9 @@ def test_resolver_rejects_wrong_pe_architecture(tmp_path, monkeypatch):
         development_root=development,
         app_version="0.1.0",
     )
-    monkeypatch.setattr(resolver, "_probe_version", lambda _: (1, "0.1.0"))
+    monkeypatch.setattr(
+        resolver, "_probe_version", lambda _: (PROTOCOL_VERSION, "0.1.0")
+    )
 
     with pytest.raises(NativeComponentError) as error:
         resolver.resolve_windows_helper()
@@ -110,7 +115,9 @@ def test_resolver_rejects_wrong_pe_architecture(tmp_path, monkeypatch):
 
 def test_resolver_rejects_version_probe_mismatch(tmp_path, monkeypatch):
     resolver, _, _ = _resolver(tmp_path, monkeypatch)
-    monkeypatch.setattr(resolver, "_probe_version", lambda _: (1, "other"))
+    monkeypatch.setattr(
+        resolver, "_probe_version", lambda _: (PROTOCOL_VERSION, "other")
+    )
 
     with pytest.raises(NativeComponentError) as error:
         resolver.resolve_windows_helper()

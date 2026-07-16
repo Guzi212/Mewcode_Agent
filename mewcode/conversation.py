@@ -22,11 +22,18 @@ class Conversation:
         self.messages.append(Message(Role.ASSISTANT, text))
         self.items.append(ConversationItem.assistant(text))
 
-    def add_assistant_turn(self, text: str, calls: list[ToolCall]) -> None:
-        """记录一个可同时包含前置文本和工具调用的模型回合。"""
+    def add_assistant_turn(
+        self,
+        text: str,
+        calls: list[ToolCall],
+        reasoning_content: str = "",
+    ) -> None:
+        """记录一个可同时包含前置文本、隐藏思考和工具调用的模型回合。"""
         if text:
             self.messages.append(Message(Role.ASSISTANT, text))
-        self.items.append(ConversationItem.assistant(text, calls))
+        self.items.append(
+            ConversationItem.assistant(text, calls, reasoning_content)
+        )
 
     def add_tool_calls(self, calls: list[ToolCall]) -> None:
         """记录首次模型响应中的完整工具调用批次。"""

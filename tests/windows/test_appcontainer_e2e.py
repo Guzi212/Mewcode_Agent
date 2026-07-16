@@ -12,6 +12,7 @@ import sys
 import time
 
 import pytest
+import mewcode
 
 from mewcode.sandbox import (
     AccessGrant,
@@ -26,6 +27,7 @@ from mewcode.sandbox.native_components import (
     NativeComponentResolver,
 )
 from mewcode.sandbox.windows import WindowsSandbox
+from mewcode.sandbox.windows_protocol import PROTOCOL_VERSION
 from mewcode.tools.models import ToolCall
 
 
@@ -222,11 +224,12 @@ async def test_host_exit_is_detected_and_cleans_job_and_acl(
     helper = NativeComponentResolver().resolve_windows_helper()
     request_id = "host-exit-native"
     request = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "operation": "run",
         "request_id": request_id,
         "timeout_ms": 60_000,
         "python_executable": str(Path(sys.executable).resolve()),
+        "python_package_root": str(Path(mewcode.__file__).resolve().parent),
         "workspace": str(workspace.resolve()),
         "grants": [],
         "worker_payload": {

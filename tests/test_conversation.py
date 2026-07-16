@@ -64,3 +64,20 @@ def test_assistant_turn_keeps_preamble_and_calls_together():
     assert history[2].text == "我先调查。"
     assert history[2].calls == tuple(calls)
     assert [result.call_id for result in history[3].results] == ["1", "2"]
+
+
+def test_assistant_tool_turn_keeps_hidden_reasoning_content():
+    conversation = Conversation("SYS")
+    call = ToolCall("1", "read_file", {"path": "a"})
+
+    conversation.add_user("检查")
+    conversation.add_assistant_turn(
+        "我先读取。",
+        [call],
+        reasoning_content="SECRET-REASONING",
+    )
+
+    item = conversation.build_history()[2]
+    assert item.text == "我先读取。"
+    assert item.calls == (call,)
+    assert item.reasoning_content == "SECRET-REASONING"

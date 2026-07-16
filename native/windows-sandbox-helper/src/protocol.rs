@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const HELPER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -22,6 +22,7 @@ pub struct RunRequest {
     pub request_id: String,
     pub timeout_ms: u64,
     pub python_executable: String,
+    pub python_package_root: String,
     pub workspace: String,
     pub grants: Vec<Grant>,
     pub worker_payload: Value,
@@ -156,6 +157,7 @@ fn validate_run_request(request: &RunRequest) -> Result<(), ProtocolError> {
         return Err(ProtocolError::new("timeout_ms 超出允许范围"));
     }
     validate_text_path(&request.python_executable)?;
+    validate_text_path(&request.python_package_root)?;
     validate_text_path(&request.workspace)?;
     if !request.worker_payload.is_object() {
         return Err(ProtocolError::new("worker_payload 必须是对象"));

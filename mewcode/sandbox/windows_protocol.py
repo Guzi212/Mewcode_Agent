@@ -11,7 +11,7 @@ from typing import Literal
 from ..tools.models import ToolError, ToolResult
 from .models import AccessMode
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 
 
@@ -38,6 +38,7 @@ class WindowsRunRequest:
     request_id: str
     timeout_ms: int
     python_executable: str
+    python_package_root: str
     workspace: str
     grants: tuple[NativeGrant, ...]
     worker_payload: dict[str, object]
@@ -50,6 +51,7 @@ class WindowsRunRequest:
         if not 1 <= self.timeout_ms <= 24 * 60 * 60 * 1000:
             raise ProtocolError("timeout_ms 超出允许范围")
         _require_windows_path(self.python_executable, "python_executable")
+        _require_windows_path(self.python_package_root, "python_package_root")
         _require_windows_path(self.workspace, "workspace")
         if not isinstance(self.worker_payload, dict):
             raise ProtocolError("worker_payload 必须是对象")
@@ -59,6 +61,7 @@ class WindowsRunRequest:
             "request_id": self.request_id,
             "timeout_ms": self.timeout_ms,
             "python_executable": self.python_executable,
+            "python_package_root": self.python_package_root,
             "workspace": self.workspace,
             "grants": [grant.to_dict() for grant in self.grants],
             "worker_payload": self.worker_payload,
