@@ -340,14 +340,33 @@ fn resolve_targets(request: &RunRequest) -> Result<Vec<AclTarget>, RunnerFailure
         let environment_root = venv_root.as_deref().unwrap_or(runtime_root_dir.as_path());
         let environment_lib = environment_root.join("Lib");
         let site_packages = environment_lib.join("site-packages");
-        let package_root = site_packages.join("mewcode");
-        add_tree_explicit(
-            &mut targets,
-            &package_root,
-            GrantMode::Read,
-            false,
-            RunnerFailure::invalid_python,
-        )?;
+        let package_root = resolve_local_ntfs(Path::new(&request.python_package_root))
+            .map_err(|_| RunnerFailure::invalid_python())?;
+        if package_root.kind != PathKind::Directory
+            || !package_root
+                .canonical_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("mewcode"))
+            || !package_root.canonical_path.join("tool_worker.py").is_file()
+        {
+            return Err(RunnerFailure::invalid_python());
+        }
+        // editable install 的源码包位于 workspace 内，后面的可继承 workspace
+        // 授权已经覆盖它；避免再逐文件添加重叠 ACE。普通 wheel 安装仍需
+        // 对 site-packages 中的包目录做窄化只读授权。
+        if !package_root
+            .canonical_path
+            .starts_with(&workspace.canonical_path)
+        {
+            add_tree_explicit(
+                &mut targets,
+                &package_root.canonical_path,
+                GrantMode::Read,
+                false,
+                RunnerFailure::invalid_python,
+            )?;
+        }
         add_path(&mut targets, &site_packages, GrantMode::Execute, false)?;
         add_path(&mut targets, &environment_lib, GrantMode::Execute, false)?;
         if venv_root.is_some() {
@@ -563,6 +582,7 @@ fn execute_worker(
     let current_directory = wide_null_path(Path::new(&request.workspace))?;
     let environment = minimal_environment(
         Path::new(&request.python_executable),
+        Path::new(&request.python_package_root),
         Path::new(&request.workspace),
         sandbox_home,
     );
@@ -967,7 +987,12 @@ fn quote_windows_argument(argument: &str) -> String {
     output
 }
 
-fn minimal_environment(python: &Path, workspace: &Path, sandbox_home: &Path) -> Vec<u16> {
+fn minimal_environment(
+    python: &Path,
+    python_package_root: &Path,
+    workspace: &Path,
+    sandbox_home: &Path,
+) -> Vec<u16> {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
     let python_dir = python.parent().unwrap_or_else(|| Path::new(""));
     let system32 = Path::new(&system_root).join("System32");
@@ -1017,14 +1042,17 @@ fn minimal_environment(python: &Path, workspace: &Path, sandbox_home: &Path) -> 
     values.insert("PYTHONNOUSERSITE".to_owned(), "1".to_owned());
     values.insert("PYTHONUTF8".to_owned(), "1".to_owned());
     if is_python_executable(python) {
-        let (python_home, site_packages) = python_environment_paths(python);
+        let (python_home, _site_packages) = python_environment_paths(python);
+        let module_root = python_package_root
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
         values.insert(
             "PYTHONHOME".to_owned(),
             python_home.to_string_lossy().into_owned(),
         );
         values.insert(
             "PYTHONPATH".to_owned(),
-            site_packages.to_string_lossy().into_owned(),
+            module_root.to_string_lossy().into_owned(),
         );
     }
     values.insert(
@@ -1231,6 +1259,7 @@ mod tests {
     fn environment_block_has_double_null_and_no_secret_names() {
         let block = minimal_environment(
             Path::new(r"D:\Python\python.exe"),
+            Path::new(r"D:\workspace\mewcode"),
             Path::new(r"D:\workspace"),
             Path::new(r"C:\SandboxProfile"),
         );
@@ -1240,6 +1269,7 @@ mod tests {
             assert!(!text.contains(forbidden));
         }
         assert!(text.contains("MEWCODE_SANDBOX=windows-appcontainer"));
+        assert!(text.contains(r"PYTHONPATH=D:\workspace"));
         assert!(text.contains(r"USERPROFILE=C:\SandboxProfile\AC"));
     }
 
@@ -1325,7 +1355,12 @@ mod tests {
         .collect();
         let directory = wide_null_path(&system32).unwrap();
         let sandbox_home = profile_folder_path(&state.appcontainer_sid).unwrap();
-        let environment = minimal_environment(&executable, &system32, &sandbox_home);
+        let environment = minimal_environment(
+            &executable,
+            &system32.join("mewcode"),
+            &system32,
+            &sandbox_home,
+        );
         let environment_pointer = environment.as_ptr().cast::<c_void>();
         let mut process_info = PROCESS_INFORMATION::default();
         // SAFETY: 此 ignored 原生测试只启动固定系统命令并保持所有参数存活。

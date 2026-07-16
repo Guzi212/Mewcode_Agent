@@ -20,6 +20,12 @@ from .sse import iter_sse
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _INVALID_TOOL_NAMES = {"", "none", "null"}
+_SENSITIVE_ERROR_FIELDS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "reasoning_content",
+}
 
 
 def _usable_tool_name(value: object) -> str | None:
@@ -30,8 +36,37 @@ def _usable_tool_name(value: object) -> str | None:
     return name if name.casefold() not in _INVALID_TOOL_NAMES else None
 
 
+def _redact_error_fields(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[已隐藏]"
+                if str(key).casefold() in _SENSITIVE_ERROR_FIELDS
+                else _redact_error_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_error_fields(item) for item in value]
+    return value
+
+
 def _http_error(resp: httpx.Response) -> str:
-    detail = (resp.text or "")[:300]
+    raw_detail = resp.text or ""
+    try:
+        detail = json.dumps(
+            _redact_error_fields(json.loads(raw_detail)),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except json.JSONDecodeError:
+        lowered = raw_detail.casefold()
+        detail = (
+            "响应详情已隐藏"
+            if any(field in lowered for field in _SENSITIVE_ERROR_FIELDS)
+            else raw_detail
+        )
+    detail = detail[:300]
     return f"请求失败（HTTP {resp.status_code}）：{detail}".rstrip("：").rstrip()
 
 
@@ -69,6 +104,10 @@ def _serialize(history: list[ConversationItem]) -> list[dict]:
             message: dict = {"role": "assistant", "content": item.text or None}
             if item.calls:
                 message["tool_calls"] = _tool_calls(item.calls)
+            if item.reasoning_content:
+                message["reasoning_content"] = item.reasoning_content
+                if item.calls and not item.text:
+                    message["content"] = ""
             messages.append(message)
         elif item.kind == ConversationItemKind.TOOL_CALLS:
             messages.append(
@@ -95,6 +134,10 @@ class OpenAIProvider(Provider):
             "messages": convo,
             "stream": True,
         }
+        if self._cfg.thinking is not None:
+            body["thinking"] = {
+                "type": "enabled" if self._cfg.thinking else "disabled"
+            }
         # 部分 OpenAI 兼容端点会拒绝未知的 stream_options；自定义端点
         # 仍解析其主动返回的 usage，但不强制发送该可选参数。
         if self._cfg.base_url is None:
@@ -150,9 +193,9 @@ class OpenAIProvider(Provider):
                         choices = obj.get("choices") or []
                         if choices:
                             delta = choices[0].get("delta", {})
-                            # 推理模型（如 deepseek-reasoner）的思考内容位于
-                            # reasoning_content；这里只取正式 content，思考增量被
-                            # 识别后丢弃、不混入正文（对齐 spec F5）。
+                            reasoning = delta.get("reasoning_content")
+                            if isinstance(reasoning, str) and reasoning:
+                                yield StreamEvent.reasoning_delta(reasoning)
                             content = delta.get("content")
                             if content:
                                 yield StreamEvent.text_delta(content)

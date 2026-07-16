@@ -1,6 +1,7 @@
 # MewCode 配置示例：复制为 mewcode.yaml 并填入真实密钥。
 # providers 可配置多项；仅一项时启动直接进入对话，多项时启动出现方向键选择列表。
 # 六个字段：name / protocol / model / api_key（必填），base_url / thinking（可选）。
+# OpenAI-compatible 仅在显式配置 thinking 时发送 enabled/disabled 扩展；缺失则不发送。
 
 # Agent Loop 最大迭代次数；可选，缺失或非法时使用 20。
 agent_max_iterations: 20
@@ -18,3 +19,4 @@ providers:
     model: gpt-4o
     api_key: "sk-xxxxxxxx"                # 填入你的 OpenAI API Key
     # base_url: https://api.openai.com/v1 # 可选，可指向兼容端点
+    # thinking: true                     # 仅用于支持 thinking 扩展的兼容端点

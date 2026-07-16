@@ -152,6 +152,7 @@ class WindowsSandbox(Sandbox):
             request.call.id,
             max(1, int(timeout * 1000)),
             str(Path(sys.executable).resolve(strict=True)),
+            str(Path(__file__).resolve(strict=True).parent.parent),
             str(workspace),
             grants,
             {

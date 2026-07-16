@@ -13,8 +13,9 @@ from ..tools.models import ToolDefinition
 class Provider(ABC):
     """与协议无关的对话后端抽象。
 
-    子类把自家 SSE 归一化为统一的 StreamEvent；识别到思考增量应丢弃、不产出；
-    网络/HTTP 错误须在内部捕获转成 StreamEvent.error(...) 后正常收束，不向外抛。
+    子类把自家 SSE 归一化为统一的 StreamEvent；协议要求续传的思考增量可作为
+    内部事件交给 Agent，但不得进入公开 AgentEvent；网络/HTTP 错误须在内部捕获
+    转成 StreamEvent.error(...) 后正常收束，不向外抛。
     """
 
     def __init__(self, cfg: ProviderConfig) -> None:

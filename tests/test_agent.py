@@ -1,12 +1,18 @@
 import asyncio
+import json
+
+import httpx
+import respx
 
 from mewcode.agent import AgentLoop
+from mewcode.config import ProviderConfig
 from mewcode.messages import (
     AgentEventKind,
     StopReason,
     StreamEvent,
     TokenUsage,
 )
+from mewcode.providers.openai import OpenAIProvider
 from mewcode.tools.models import ToolCall, ToolExecutionEvent, ToolResult
 from mewcode.tools.registry import build_default_registry
 
@@ -121,12 +127,138 @@ async def test_multiround_tool_calls_continue_until_plain_text():
     assert assistant.calls == (read,)
 
 
+async def test_reasoning_is_hidden_and_kept_for_tool_call_continuation():
+    read = ToolCall("1", "read_file", {"path": "a"})
+    write = ToolCall("2", "write_file", {"path": "b", "content": "x"})
+    agent, provider, _ = _agent(
+        [
+            [
+                StreamEvent.reasoning_delta("SECRET-FIRST"),
+                StreamEvent.text_delta("先读。"),
+                StreamEvent.tool_call(read),
+                StreamEvent.done(),
+            ],
+            [
+                StreamEvent.reasoning_delta("SECRET-SECOND"),
+                StreamEvent.tool_call(write),
+                StreamEvent.done(),
+            ],
+            [
+                StreamEvent.reasoning_delta("SECRET-FINAL"),
+                StreamEvent.text_delta("全部完成"),
+                StreamEvent.done(),
+            ],
+        ]
+    )
+
+    events = await _collect(agent, "完成任务")
+
+    visible = "\n".join(event.text for event in events)
+    assert "SECRET" not in visible
+    assert events[-1].stop_reason == StopReason.COMPLETED
+    assistant_items = [item for item in agent.conversation.items if item.calls]
+    assert [item.reasoning_content for item in assistant_items] == [
+        "SECRET-FIRST",
+        "SECRET-SECOND",
+    ]
+    assert all(
+        "SECRET-FINAL" not in item.reasoning_content
+        for item in agent.conversation.items
+    )
+    assert not any(
+        "SECRET" in message.content
+        for message in agent.conversation.messages
+    )
+    second_request_history = provider.requests[1][0]
+    assert any(
+        item.reasoning_content == "SECRET-FIRST"
+        for item in second_request_history
+    )
+
+
+async def test_reasoning_without_tool_call_is_not_saved():
+    agent, _, _ = _agent(
+        [
+            [
+                StreamEvent.reasoning_delta("SECRET-FINAL"),
+                StreamEvent.text_delta("完成"),
+                StreamEvent.done(),
+            ]
+        ]
+    )
+
+    events = await _collect(agent, "回答")
+
+    assert "SECRET" not in "\n".join(event.text for event in events)
+    assert agent.conversation.items[-1].text == "完成"
+    assert agent.conversation.items[-1].reasoning_content == ""
+
+
+@respx.mock
+async def test_openai_reasoning_round_trips_through_agent_tool_loop():
+    first = (
+        'data: {"choices":[{"delta":{"reasoning_content":"SECRET-ROUND"}}]}\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    second = (
+        'data: {"choices":[{"delta":{"content":"读取完成"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    route = respx.post("https://compatible.local/chat/completions").mock(
+        side_effect=[
+            httpx.Response(200, text=first),
+            httpx.Response(200, text=second),
+        ]
+    )
+    provider = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="vendor-reasoner",
+            api_key="k",
+            base_url="https://compatible.local",
+            thinking=True,
+        )
+    )
+    agent = AgentLoop(
+        provider,
+        build_default_registry(),
+        RecordingExecutor(),
+    )
+
+    events = await _collect(agent, "读取项目说明")
+
+    assert events[-1].stop_reason == StopReason.COMPLETED
+    assert "SECRET" not in "\n".join(event.text for event in events)
+    assert route.call_count == 2
+    second_body = json.loads(route.calls[1].request.content)
+    assistant = next(
+        message
+        for message in second_body["messages"]
+        if message["role"] == "assistant" and message.get("tool_calls")
+    )
+    assert second_body["thinking"] == {"type": "enabled"}
+    assert assistant["content"] == ""
+    assert assistant["reasoning_content"] == "SECRET-ROUND"
+    tool_index = second_body["messages"].index(assistant) + 1
+    assert second_body["messages"][tool_index]["role"] == "tool"
+
+
 async def test_iteration_limit_stops_without_extra_provider_request():
     call = ToolCall("1", "read_file", {"path": "a"})
     agent, provider, _ = _agent(
         [
-            [StreamEvent.tool_call(call), StreamEvent.done()],
-            [StreamEvent.tool_call(call), StreamEvent.done()],
+            [
+                StreamEvent.reasoning_delta("SECRET-LIMIT-1"),
+                StreamEvent.tool_call(call),
+                StreamEvent.done(),
+            ],
+            [
+                StreamEvent.reasoning_delta("SECRET-LIMIT-2"),
+                StreamEvent.tool_call(call),
+                StreamEvent.done(),
+            ],
         ],
         max_iterations=2,
     )
@@ -135,6 +267,12 @@ async def test_iteration_limit_stops_without_extra_provider_request():
 
     assert len(provider.requests) == 2
     assert events[-1].stop_reason == StopReason.ITERATION_LIMIT
+    assert [
+        item.reasoning_content
+        for item in agent.conversation.items
+        if item.calls
+    ] == ["SECRET-LIMIT-1", "SECRET-LIMIT-2"]
+    assert "SECRET" not in "\n".join(event.text for event in events)
 
 
 async def test_stream_error_stops_and_next_task_can_run():
@@ -280,6 +418,19 @@ class BlockingProvider:
         yield StreamEvent.done()
 
 
+class BlockingReasoningProvider:
+    name = "fake"
+    model = "fake-model"
+
+    def __init__(self) -> None:
+        self.waiting = asyncio.Event()
+
+    async def stream(self, history, tools=None):
+        yield StreamEvent.reasoning_delta("SECRET-PARTIAL")
+        self.waiting.set()
+        await asyncio.Event().wait()
+
+
 async def test_cancel_during_provider_stream_restores_agent():
     provider = BlockingProvider()
     agent = AgentLoop(
@@ -296,6 +447,71 @@ async def test_cancel_during_provider_stream_restores_agent():
     assert events[-1].stop_reason == StopReason.CANCELLED
     assert agent.is_running is False
     assert agent.cancel_current() is False
+
+
+async def test_cancel_after_partial_reasoning_leaves_no_orphan_history():
+    provider = BlockingReasoningProvider()
+    agent = AgentLoop(
+        provider,
+        build_default_registry(),
+        RecordingExecutor(),
+    )
+    task = asyncio.create_task(_collect(agent, "等待"))
+    await provider.waiting.wait()
+
+    assert agent.cancel_current() is True
+    events = await asyncio.wait_for(task, timeout=1)
+
+    assert events[-1].stop_reason == StopReason.CANCELLED
+    assert not any(item.reasoning_content for item in agent.conversation.items)
+    assert "SECRET" not in "\n".join(event.text for event in events)
+
+
+@respx.mock
+async def test_openai_http_error_then_next_task_recovers():
+    route = respx.post("https://compatible.local/chat/completions").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "error": {"message": "bad request"},
+                    "reasoning_content": "SECRET-ERROR",
+                },
+            ),
+            httpx.Response(
+                200,
+                text=(
+                    'data: {"choices":[{"delta":{"content":"恢复"}}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            ),
+        ]
+    )
+    provider = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="vendor-reasoner",
+            api_key="k",
+            base_url="https://compatible.local",
+            thinking=True,
+        )
+    )
+    agent = AgentLoop(
+        provider,
+        build_default_registry(),
+        RecordingExecutor(),
+    )
+
+    first = await _collect(agent, "第一次")
+    second = await _collect(agent, "第二次")
+
+    assert first[-1].stop_reason == StopReason.STREAM_ERROR
+    assert second[-1].stop_reason == StopReason.COMPLETED
+    assert route.call_count == 2
+    assert "SECRET" not in "\n".join(
+        event.text for event in [*first, *second]
+    )
 
 
 class BlockingExecutor(RecordingExecutor):
@@ -318,7 +534,14 @@ async def test_cancel_during_tool_execution_keeps_history_paired():
     call = ToolCall("1", "read_file", {"path": "a"})
     executor = BlockingExecutor()
     agent, _, _ = _agent(
-        [[StreamEvent.tool_call(call), StreamEvent.done()]], executor=executor
+        [
+            [
+                StreamEvent.reasoning_delta("SECRET-CANCEL"),
+                StreamEvent.tool_call(call),
+                StreamEvent.done(),
+            ]
+        ],
+        executor=executor,
     )
     task = asyncio.create_task(_collect(agent, "等待工具"))
     await executor.started.wait()
@@ -331,6 +554,9 @@ async def test_cancel_during_tool_execution_keeps_history_paired():
     assert result_items[-1].results[0].call_id == "1"
     assert result_items[-1].results[0].error is not None
     assert result_items[-1].results[0].error.code == "cancelled"
+    call_item = next(item for item in agent.conversation.items if item.calls)
+    assert call_item.reasoning_content == "SECRET-CANCEL"
+    assert "SECRET" not in "\n".join(event.text for event in events)
 
 
 async def test_empty_plan_and_empty_task_are_recoverable_errors():

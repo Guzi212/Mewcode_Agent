@@ -42,6 +42,7 @@ class ConversationItem:
     text: str = ""
     calls: tuple[ToolCall, ...] = ()
     results: tuple[ToolResult, ...] = ()
+    reasoning_content: str = ""
 
     @classmethod
     def text_item(cls, kind: ConversationItemKind, text: str) -> "ConversationItem":
@@ -49,13 +50,17 @@ class ConversationItem:
 
     @classmethod
     def assistant(
-        cls, text: str, calls: list[ToolCall] | None = None
+        cls,
+        text: str,
+        calls: list[ToolCall] | None = None,
+        reasoning_content: str = "",
     ) -> "ConversationItem":
-        """构造一个可同时包含正文和工具调用的模型回合。"""
+        """构造一个可同时包含正文、隐藏思考和工具调用的模型回合。"""
         return cls(
             kind=ConversationItemKind.ASSISTANT,
             text=text,
             calls=tuple(calls or ()),
+            reasoning_content=reasoning_content,
         )
 
     @classmethod
@@ -68,13 +73,10 @@ class ConversationItem:
 
 
 class StreamEventKind(str, Enum):
-    """统一增量事件类型。
-
-    注意：无 thinking 事件——思考增量在 Provider 内被识别后直接丢弃，
-    不进入事件流（对应 spec F5「接收即丢弃、不混入正文」）。
-    """
+    """统一增量事件类型；思考增量仅供 Agent 内部消费。"""
 
     TEXT_DELTA = "text_delta"
+    REASONING_DELTA = "reasoning_delta"
     TOOL_CALL = "tool_call"
     USAGE = "usage"
     ERROR = "error"
@@ -97,10 +99,16 @@ class StreamEvent:
     text: str = ""
     call: ToolCall | None = None
     usage: TokenUsage | None = None
+    reasoning: str = ""
 
     @classmethod
     def text_delta(cls, s: str) -> "StreamEvent":
         return cls(StreamEventKind.TEXT_DELTA, s)
+
+    @classmethod
+    def reasoning_delta(cls, value: str) -> "StreamEvent":
+        """思考增量不复用正文 text，避免被公开事件分支误转发。"""
+        return cls(StreamEventKind.REASONING_DELTA, reasoning=value)
 
     @classmethod
     def tool_call(cls, call: ToolCall) -> "StreamEvent":

@@ -108,6 +108,7 @@ class AgentLoop:
             for iteration in range(1, self._max_iterations + 1):
                 yield AgentEvent.iteration_started(iteration)
                 text_parts: list[str] = []
+                reasoning_parts: list[str] = []
                 calls: list[ToolCall] = []
                 round_usage = TokenUsage()
                 stream_error = ""
@@ -131,6 +132,8 @@ class AgentLoop:
                         if event.kind == StreamEventKind.TEXT_DELTA:
                             text_parts.append(event.text)
                             yield AgentEvent.text_delta(event.text, iteration)
+                        elif event.kind == StreamEventKind.REASONING_DELTA:
+                            reasoning_parts.append(event.reasoning)
                         elif (
                             event.kind == StreamEventKind.TOOL_CALL
                             and event.call is not None
@@ -153,8 +156,13 @@ class AgentLoop:
                     await self._close_iterator(iterator)
 
                 full_text = "".join(text_parts)
+                full_reasoning = "".join(reasoning_parts)
                 if full_text or calls:
-                    self.conversation.add_assistant_turn(full_text, calls)
+                    self.conversation.add_assistant_turn(
+                        full_text,
+                        calls,
+                        full_reasoning if calls else "",
+                    )
                 self._commit_usage(round_usage)
 
                 if stream_cancelled or self._cancel_requested.is_set():

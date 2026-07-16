@@ -5,6 +5,7 @@ import pytest
 from mewcode.sandbox import AccessMode
 from mewcode.sandbox.windows_protocol import (
     NativeGrant,
+    PROTOCOL_VERSION,
     ProtocolError,
     RunnerStatus,
     WindowsRunRequest,
@@ -14,10 +15,11 @@ from mewcode.sandbox.windows_protocol import (
 
 def _request(**changes):
     values = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "request_id": "call-1",
         "timeout_ms": 20_000,
         "python_executable": r"C:\Python\python.exe",
+        "python_package_root": r"D:\project\mewcode",
         "workspace": r"D:\project",
         "grants": (NativeGrant(r"D:\project", AccessMode.WRITE, "directory"),),
         "worker_payload": {"call": {"id": "call-1"}, "workspace": r"D:\project"},
@@ -28,7 +30,7 @@ def _request(**changes):
 
 def _completed_response(**changes):
     raw = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "request_id": "call-1",
         "status": "completed",
         "worker_result": {
@@ -53,6 +55,7 @@ def test_request_serializes_as_one_strict_json_line():
     assert data.endswith(b"\n")
     assert data.count(b"\n") == 1
     assert raw["operation"] == "run"
+    assert raw["python_package_root"] == r"D:\project\mewcode"
     assert raw["grants"] == [
         {"path": r"D:\project", "mode": "write", "kind": "directory"}
     ]
@@ -61,11 +64,12 @@ def test_request_serializes_as_one_strict_json_line():
 @pytest.mark.parametrize(
     "changes",
     [
-        {"protocol_version": 2},
+        {"protocol_version": PROTOCOL_VERSION + 1},
         {"request_id": ""},
         {"timeout_ms": True},
         {"timeout_ms": 0},
         {"python_executable": "python.exe"},
+        {"python_package_root": "mewcode"},
         {"workspace": r"\\server\share"},
     ],
 )
@@ -87,7 +91,7 @@ def test_completed_response_converts_to_tool_result():
 
 def test_failed_response_converts_to_tool_error():
     raw = {
-        "protocol_version": 1,
+        "protocol_version": PROTOCOL_VERSION,
         "request_id": "call-1",
         "status": "timed_out",
         "worker_result": None,

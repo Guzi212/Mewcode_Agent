@@ -28,7 +28,7 @@ class ProviderConfig:
     model: str
     api_key: str
     base_url: str | None = None
-    thinking: bool = False
+    thinking: bool | None = None
 
 
 @dataclass
@@ -65,13 +65,15 @@ def _parse_provider(index: int, item: object) -> ProviderConfig:
             f"providers[{index}] protocol 非法：{protocol}"
             f"（支持 {sorted(VALID_PROTOCOLS)}）"
         )
+    if "thinking" in item and not isinstance(item["thinking"], bool):
+        raise ConfigError(f"providers[{index}] thinking 必须是布尔值")
     return ProviderConfig(
         name=str(item["name"]),
         protocol=protocol,
         model=str(item["model"]),
         api_key=str(item["api_key"]),
         base_url=item.get("base_url"),
-        thinking=bool(item.get("thinking", False)),
+        thinking=item.get("thinking"),
     )
 
 
