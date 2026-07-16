@@ -2,9 +2,16 @@ from mewcode.config import AppConfig, ProviderConfig
 import asyncio
 
 from mewcode.messages import StreamEvent, TokenUsage
+from mewcode.sandbox import SandboxDiagnostic, SandboxState
 from mewcode.tools.models import ToolCall, ToolExecutionEvent, ToolResult
 from mewcode.tui.app import MewCodeApp
-from mewcode.tui.widgets import AssistantMessage, ErrorMessage, PromptInput, ToolMessage
+from mewcode.tui.widgets import (
+    AssistantMessage,
+    ErrorMessage,
+    PromptInput,
+    ReadyLine,
+    ToolMessage,
+)
 from textual.containers import VerticalScroll
 
 
@@ -44,6 +51,26 @@ class FakeExecutor:
             yield ToolExecutionEvent.started(call)
             result = ToolResult(call.id, call.name, True, "", "已完成")
             yield ToolExecutionEvent.finished(call, result)
+
+
+class FakeSandbox:
+    def __init__(self, state=SandboxState.READY, *, raises=False):
+        self.state = state
+        self.raises = raises
+
+    def diagnose(self):
+        if self.raises:
+            raise RuntimeError("raw local diagnostic")
+        return SandboxDiagnostic(
+            self.state,
+            "windows-appcontainer",
+            self.state.value,
+            "脱敏状态",
+            "脱敏建议",
+        )
+
+    async def run(self, request, timeout):
+        raise AssertionError("纯对话不应调用沙箱")
 
 
 def _single_config():
@@ -217,3 +244,46 @@ async def test_iteration_visible_and_escape_cancels_current_task():
         assert app.query_one(PromptInput).disabled is False
         assert any("取消" in str(message.render()) for message in app.query(ErrorMessage))
         assert app.is_running
+
+
+async def test_sandbox_status_is_loaded_without_blocking_tui():
+    app = MewCodeApp(
+        _single_config(),
+        provider=FakeProvider([]),
+        sandbox=FakeSandbox(SandboxState.SETUP_REQUIRED),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert "工具沙箱待准备" in str(app.query_one(ReadyLine).render())
+        assert "windows-appcontainer/setup_required" in str(
+            app.query_one(".status-left").render()
+        )
+
+
+async def test_broken_sandbox_keeps_pure_conversation_available():
+    provider = FakeProvider([StreamEvent.text_delta("仍可回答"), StreamEvent.done()])
+    app = MewCodeApp(
+        _single_config(),
+        provider=provider,
+        sandbox=FakeSandbox(SandboxState.BROKEN),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(PromptInput).post_message(PromptInput.Submitted("只聊天"))
+        await pilot.pause()
+        await pilot.pause()
+        assert app.query_one(AssistantMessage).text == "仍可回答"
+        assert "工具沙箱不可用" in str(app.query_one(ReadyLine).render())
+
+
+async def test_diagnostic_exception_is_sanitized():
+    app = MewCodeApp(
+        _single_config(), provider=FakeProvider([]), sandbox=FakeSandbox(raises=True)
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        rendered = str(app.query_one(ReadyLine).render())
+        assert "工具沙箱不可用" in rendered
+        assert "raw local diagnostic" not in rendered

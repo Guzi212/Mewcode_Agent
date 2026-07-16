@@ -26,8 +26,17 @@ mewcode = "mewcode.cli:main"
 [tool.setuptools.packages.find]
 include = ["mewcode*"]
 
+[tool.setuptools.package-data]
+mewcode = [
+    "native/windows-x86_64/mewcode-windows-sandbox.exe",
+    "native/windows-x86_64/manifest.json",
+]
+
 [tool.setuptools.dynamic]
 version = { attr = "mewcode.__version__" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "windows_native: 会启动真实 AppContainer 并临时应用 NTFS ACL 的显式原生测试",
+]

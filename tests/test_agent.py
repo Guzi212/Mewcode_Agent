@@ -78,6 +78,27 @@ async def test_natural_completion_emits_text_and_completed():
     assert agent.conversation.items[-1].text == "完成"
 
 
+async def test_platform_context_is_injected_once_in_normal_and_plan(monkeypatch):
+    marker = "当前运行平台：Windows；命令 Shell：Windows PowerShell。"
+    monkeypatch.setattr("mewcode.agent.platform_context", lambda: marker)
+    agent, provider, _ = _agent(
+        [
+            [StreamEvent.text_delta("完成"), StreamEvent.done()],
+            [StreamEvent.text_delta("计划完成"), StreamEvent.done()],
+        ]
+    )
+
+    await _collect(agent, "普通任务")
+    await _collect(agent, "/plan 计划任务")
+
+    normal_prompt = provider.requests[0][0][0].text
+    plan_prompt = provider.requests[1][0][0].text
+    assert normal_prompt.count(marker) == 1
+    assert plan_prompt.count(marker) == 1
+    assert "计划模式" not in normal_prompt
+    assert "计划模式" in plan_prompt
+
+
 async def test_multiround_tool_calls_continue_until_plain_text():
     read = ToolCall("1", "read_file", {"path": "a"})
     write = ToolCall("2", "write_file", {"path": "b", "content": "x"})

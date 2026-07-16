@@ -9,10 +9,26 @@ import shutil
 
 from ..tools.models import ToolResult
 from .base import Sandbox
-from .models import SandboxRequest
+from .models import SandboxDiagnostic, SandboxRequest, SandboxState
 
 
 class LinuxSandbox(Sandbox):
+    def diagnose(self) -> SandboxDiagnostic:
+        if shutil.which("bwrap") is None:
+            return SandboxDiagnostic(
+                SandboxState.UNSUPPORTED,
+                "linux-bubblewrap",
+                "unsupported_platform",
+                "本版本尚未提供 Linux/WSL 沙箱后端",
+                "请改用受支持的 macOS 或原生 Windows 环境",
+            )
+        return SandboxDiagnostic(
+            SandboxState.UNSUPPORTED,
+            "linux-bubblewrap",
+            "unsupported_platform",
+            "Linux Bubblewrap 后端尚未实现",
+        )
+
     async def run(self, request: SandboxRequest, timeout: float) -> ToolResult:
         if shutil.which("bwrap") is None:
             return ToolResult.failure(

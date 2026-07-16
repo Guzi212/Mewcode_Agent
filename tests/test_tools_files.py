@@ -12,6 +12,19 @@ def test_read_file_adds_line_numbers(tmp_path: Path):
     assert result.output == "1: first\n2: second"
 
 
+def test_read_file_maps_metadata_access_denied_to_stable_error(tmp_path: Path, monkeypatch):
+    def deny_metadata_access(_path: Path) -> bool:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "is_file", deny_metadata_access)
+
+    result = read_file(ToolCall("1", "read_file", {"path": "outside.txt"}), tmp_path)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "file_read_error"
+
+
 def test_write_creates_parent_and_edit_requires_unique_match(tmp_path: Path):
     write = write_file(
         ToolCall("1", "write_file", {"path": "nested/config.txt", "content": "port=3000"}),

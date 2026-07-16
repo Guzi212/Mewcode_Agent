@@ -1,6 +1,6 @@
 import asyncio
 
-from mewcode.sandbox.models import AccessRequest, SandboxRequest
+from mewcode.sandbox.models import AccessRequest, ApprovalScope, SandboxRequest
 from mewcode.tools import (
     Tool,
     ToolCall,
@@ -11,6 +11,7 @@ from mewcode.tools import (
     ToolSafety,
 )
 from mewcode.tools.executor import ToolExecutor
+from mewcode.tools.registry import build_default_registry
 
 
 class ClassifiedTool(Tool):
@@ -154,3 +155,126 @@ async def test_already_cancelled_batch_returns_cancelled_results(tmp_path):
 
     assert [result.call_id for result in results] == ["1", "2"]
     assert all(result.error and result.error.code == "cancelled" for result in results)
+
+
+class GrantRecordingSandbox:
+    def __init__(self) -> None:
+        self.requests: list[SandboxRequest] = []
+
+    async def run(self, request: SandboxRequest, timeout: float) -> ToolResult:
+        self.requests.append(request)
+        return ToolResult(request.call.id, request.call.name, True, "ok", "完成")
+
+
+async def test_external_path_deny_never_reaches_sandbox(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    sandbox = GrantRecordingSandbox()
+    observed: list[AccessRequest] = []
+
+    async def deny(request: AccessRequest) -> ApprovalScope:
+        observed.append(request)
+        return ApprovalScope.DENY
+
+    executor = ToolExecutor(
+        build_default_registry(),
+        sandbox,
+        workspace,
+        approve=deny,
+        temp_dir=workspace / ".tmp",
+    )
+    result = await executor.execute(
+        ToolCall("deny", "read_file", {"path": str(external)})
+    )
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "permission_denied"
+    assert sandbox.requests == []
+    assert observed[0].tool_name == "read_file"
+    assert observed[0].target == external.resolve()
+
+
+async def test_once_grant_applies_to_one_call_and_is_not_persisted(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    sandbox = GrantRecordingSandbox()
+    decisions = iter((ApprovalScope.ONCE, ApprovalScope.DENY))
+    approvals = 0
+
+    async def approve(_request: AccessRequest) -> ApprovalScope:
+        nonlocal approvals
+        approvals += 1
+        return next(decisions)
+
+    executor = ToolExecutor(
+        build_default_registry(),
+        sandbox,
+        workspace,
+        approve=approve,
+        temp_dir=workspace / ".tmp",
+    )
+    first = await executor.execute(
+        ToolCall("once", "read_file", {"path": str(external)})
+    )
+    second = await executor.execute(
+        ToolCall("again", "read_file", {"path": str(external)})
+    )
+
+    assert first.ok
+    assert not second.ok
+    assert approvals == 2
+    external_grants = [
+        grant
+        for grant in sandbox.requests[0].grants
+        if grant.target == external.resolve()
+    ]
+    assert len(external_grants) == 1
+    assert external_grants[0].scope is ApprovalScope.ONCE
+
+
+async def test_session_grant_persists_only_in_current_executor(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside", encoding="utf-8")
+    sandbox = GrantRecordingSandbox()
+    approvals = 0
+
+    async def approve(_request: AccessRequest) -> ApprovalScope:
+        nonlocal approvals
+        approvals += 1
+        return ApprovalScope.SESSION
+
+    executor = ToolExecutor(
+        build_default_registry(),
+        sandbox,
+        workspace,
+        approve=approve,
+        temp_dir=workspace / ".tmp",
+    )
+    first = await executor.execute(
+        ToolCall("session-1", "read_file", {"path": str(external)})
+    )
+    second = await executor.execute(
+        ToolCall("session-2", "read_file", {"path": str(external)})
+    )
+    restarted = ToolExecutor(
+        build_default_registry(),
+        sandbox,
+        workspace,
+        temp_dir=workspace / ".tmp",
+    )
+    after_restart = await restarted.execute(
+        ToolCall("restart", "read_file", {"path": str(external)})
+    )
+
+    assert first.ok and second.ok
+    assert approvals == 1
+    assert not after_restart.ok
+    assert after_restart.error is not None
+    assert after_restart.error.code == "permission_denied"

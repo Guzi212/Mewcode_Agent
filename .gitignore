@@ -6,5 +6,12 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .mewcode/
+
+# Rust / Windows 原生构建产物
+native/windows-sandbox-helper/target/
+mewcode/native/windows-x86_64/mewcode-windows-sandbox.exe
+mewcode/native/windows-x86_64/manifest.json

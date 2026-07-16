@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -16,7 +17,14 @@ from ..conversation import Conversation
 from ..messages import AgentEventKind
 from ..prompts import SYSTEM_PROMPT
 from ..providers import Provider, create_provider
-from ..sandbox import AccessRequest, ApprovalScope, SandboxFactory
+from ..sandbox import (
+    AccessRequest,
+    ApprovalScope,
+    Sandbox,
+    SandboxDiagnostic,
+    SandboxFactory,
+    SandboxState,
+)
 from ..tools.executor import ToolExecutor
 from ..tools.registry import ToolRegistry, build_default_registry
 from .screens import ProviderSelectScreen, ToolApprovalScreen
@@ -59,6 +67,7 @@ class MewCodeApp(App):
         registry: ToolRegistry | None = None,
         executor: ToolExecutor | None = None,
         agent: AgentLoop | None = None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -72,9 +81,10 @@ class MewCodeApp(App):
             agent.conversation if agent is not None else Conversation(SYSTEM_PROMPT)
         )
         self._tool_registry = registry or build_default_registry()
+        self._sandbox = sandbox or SandboxFactory.create()
         self._executor = executor or ToolExecutor(
             self._tool_registry,
-            SandboxFactory.create(),
+            self._sandbox,
             os.getcwd(),
             approve=self._approve_external_path,
         )
@@ -87,6 +97,12 @@ class MewCodeApp(App):
         yield StatusBar()
 
     def on_mount(self) -> None:
+        self.run_worker(
+            self._load_sandbox_diagnostic(),
+            name="sandbox-diagnostic",
+            group="sandbox-diagnostic",
+            exclusive=True,
+        )
         if self._forced_provider is not None:
             self._activate(self._forced_provider)
             return
@@ -97,6 +113,24 @@ class MewCodeApp(App):
             self.push_screen(
                 ProviderSelectScreen(self._config.providers), self._on_selected
             )
+
+    async def _load_sandbox_diagnostic(self) -> None:
+        try:
+            diagnostic = await asyncio.to_thread(self._sandbox.diagnose)
+        except Exception:
+            diagnostic = SandboxDiagnostic(
+                SandboxState.BROKEN,
+                "sandbox",
+                "diagnostic_failed",
+                "沙箱诊断失败",
+                "运行 mewcode sandbox diagnose",
+            )
+        # 诊断在线程中完成时，测试或用户可能已经关闭界面；此时组件已卸载，
+        # 不应让后台 Worker 因查询不到节点而把正常退出变成崩溃。
+        for ready_line in self.query(ReadyLine):
+            ready_line.set_sandbox(diagnostic)
+        for status_bar in self.query(StatusBar):
+            status_bar.set_sandbox(diagnostic)
 
     def _on_selected(self, cfg) -> None:
         if cfg is None:

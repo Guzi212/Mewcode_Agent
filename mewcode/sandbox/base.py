@@ -6,11 +6,16 @@ from abc import ABC, abstractmethod
 import platform
 
 from ..tools.models import ToolResult
-from .models import SandboxRequest
+from .models import SandboxDiagnostic, SandboxRequest
 
 
 class Sandbox(ABC):
     """在受限工作进程中执行一次工具调用。"""
+
+    @abstractmethod
+    def diagnose(self) -> SandboxDiagnostic:
+        """只读检查后端状态，不执行准备或降级。"""
+        ...
 
     @abstractmethod
     async def run(self, request: SandboxRequest, timeout: float) -> ToolResult:
@@ -37,4 +42,4 @@ class SandboxFactory:
             return WindowsSandbox()
         from .unavailable import UnavailableSandbox
 
-        return UnavailableSandbox(f"不支持的平台：{system}")
+        return UnavailableSandbox(f"不支持的平台：{system}", backend=system.lower())
