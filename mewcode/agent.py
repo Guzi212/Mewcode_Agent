@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .conversation import Conversation
+from .environment import build_environment_reminder
 from .messages import (
     AgentEvent,
     StopReason,
@@ -15,9 +16,8 @@ from .messages import (
     StreamEventKind,
     TokenUsage,
 )
-from .prompts import EXECUTE_PLAN_PROMPT, PLAN_MODE_PROMPT, SYSTEM_PROMPT
+from .prompts import EXECUTE_PLAN_PROMPT, SYSTEM_PROMPT, build_plan_mode_reminder
 from .providers import Provider
-from .shell import platform_context
 from .tools.base import ToolSafety
 from .tools.executor import ToolExecutor
 from .tools.models import (
@@ -67,6 +67,10 @@ class AgentLoop:
         self._total_output = 0
         self._has_input_usage = False
         self._has_output_usage = False
+        self._total_cache_read = 0
+        self._total_cache_write = 0
+        self._has_cache_read_usage = False
+        self._has_cache_write_usage = False
 
     @property
     def pending_plan(self) -> str | None:
@@ -100,9 +104,6 @@ class AgentLoop:
         self._cancel_requested = asyncio.Event()
         try:
             self.conversation.add_user(parsed.task_text)
-            system_prompt = f"{SYSTEM_PROMPT.rstrip()}\n\n{platform_context()}"
-            if parsed.mode == AgentMode.PLAN:
-                system_prompt = f"{system_prompt.rstrip()}\n\n{PLAN_MODE_PROMPT.strip()}"
             unknown_only_rounds = 0
 
             for iteration in range(1, self._max_iterations + 1):
@@ -116,8 +117,19 @@ class AgentLoop:
                 tools = self._registry.definitions(
                     read_only=parsed.mode == AgentMode.PLAN
                 )
+                reminders = [
+                    await build_environment_reminder(
+                        self._provider.name,
+                        self._provider.model,
+                    )
+                ]
+                if parsed.mode == AgentMode.PLAN:
+                    reminders.append(build_plan_mode_reminder(iteration))
                 iterator = self._provider.stream(
-                    self.conversation.build_history(system_prompt), tools
+                    self.conversation.build_history(
+                        system_reminders=reminders,
+                    ),
+                    tools,
                 ).__aiter__()
 
                 try:
@@ -357,6 +369,12 @@ class AgentLoop:
             latest.output_tokens
             if latest.output_tokens is not None
             else current.output_tokens,
+            latest.cache_read_tokens
+            if latest.cache_read_tokens is not None
+            else current.cache_read_tokens,
+            latest.cache_write_tokens
+            if latest.cache_write_tokens is not None
+            else current.cache_write_tokens,
         )
 
     def _usage_with_current_round(self, current: TokenUsage) -> TokenUsage:
@@ -367,6 +385,16 @@ class AgentLoop:
             self._total_output + current.output_tokens
             if current.output_tokens is not None
             else (self._total_output if self._has_output_usage else None),
+            self._total_cache_read + current.cache_read_tokens
+            if current.cache_read_tokens is not None
+            else (
+                self._total_cache_read if self._has_cache_read_usage else None
+            ),
+            self._total_cache_write + current.cache_write_tokens
+            if current.cache_write_tokens is not None
+            else (
+                self._total_cache_write if self._has_cache_write_usage else None
+            ),
         )
 
     def _commit_usage(self, usage: TokenUsage) -> None:
@@ -376,3 +404,9 @@ class AgentLoop:
         if usage.output_tokens is not None:
             self._total_output += usage.output_tokens
             self._has_output_usage = True
+        if usage.cache_read_tokens is not None:
+            self._total_cache_read += usage.cache_read_tokens
+            self._has_cache_read_usage = True
+        if usage.cache_write_tokens is not None:
+            self._total_cache_write += usage.cache_write_tokens
+            self._has_cache_write_usage = True

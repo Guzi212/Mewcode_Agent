@@ -84,6 +84,32 @@ def test_macos_empty_worker_output_is_reported_as_sandbox_unavailable(tmp_path: 
     assert "Expecting value" not in result.error.message
 
 
+def test_macos_worker_request_uses_single_json_line(tmp_path: Path, monkeypatch):
+    store = PermissionStore(tmp_path)
+    request = SandboxRequest(
+        ToolCall("call-1", "read_file", {"path": "missing.txt"}),
+        tmp_path,
+        store.grants_for_call(),
+    )
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            '{"call_id":"call-1","name":"read_file","ok":false,"output":"","summary":"文件不存在","truncated":false,"error":{"code":"file_not_found","message":"文件不存在"}}\n',
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    MacOSSandbox()._run_sync(request, 1)
+
+    assert captured["input"].endswith("\n")
+    assert captured["input"].count("\n") == 1
+
+
 def test_macos_profile_allows_real_bin_and_sbin_paths(tmp_path: Path):
     if platform.system() != "Darwin":
         pytest.skip("仅在 macOS 验证真实 Seatbelt 系统路径")

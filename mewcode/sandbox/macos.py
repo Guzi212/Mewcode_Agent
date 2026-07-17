@@ -49,7 +49,7 @@ class MacOSSandbox(Sandbox):
         try:
             completed = subprocess.run(
                 command,
-                input=json.dumps(payload),
+                input=json.dumps(payload) + "\n",
                 text=True,
                 capture_output=True,
                 env=self._clean_env(),

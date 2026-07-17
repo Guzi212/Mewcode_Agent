@@ -28,6 +28,7 @@ class ConversationItemKind(str, Enum):
     """协议无关的会话历史项类型。"""
 
     SYSTEM = "system"
+    SYSTEM_REMINDER = "system_reminder"
     USER = "user"
     ASSISTANT = "assistant"
     TOOL_CALLS = "tool_calls"
@@ -47,6 +48,11 @@ class ConversationItem:
     @classmethod
     def text_item(cls, kind: ConversationItemKind, text: str) -> "ConversationItem":
         return cls(kind=kind, text=text)
+
+    @classmethod
+    def system_reminder(cls, text: str) -> "ConversationItem":
+        """构造只供当前请求使用的可信系统级补充项。"""
+        return cls(kind=ConversationItemKind.SYSTEM_REMINDER, text=text)
 
     @classmethod
     def assistant(
@@ -89,6 +95,8 @@ class TokenUsage:
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 @dataclass(frozen=True)
