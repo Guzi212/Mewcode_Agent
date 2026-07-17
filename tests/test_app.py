@@ -198,7 +198,7 @@ async def test_tool_line_keeps_tool_name_after_widget_is_mounted():
 async def test_usage_updates_status_bar():
     provider = FakeProvider(
         [
-            StreamEvent.token_usage(TokenUsage(12, 4)),
+            StreamEvent.token_usage(TokenUsage(12, 4, 8, 2)),
             StreamEvent.text_delta("完成"),
             StreamEvent.done(),
         ]
@@ -211,6 +211,7 @@ async def test_usage_updates_status_bar():
         await pilot.pause()
 
         assert "tokens in 12 / out 4" in str(app.query_one(".status-right").render())
+        assert "cache" not in str(app.query_one(".status-right").render()).lower()
 
 
 class BlockingProvider:

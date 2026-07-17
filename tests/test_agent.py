@@ -84,9 +84,13 @@ async def test_natural_completion_emits_text_and_completed():
     assert agent.conversation.items[-1].text == "完成"
 
 
-async def test_platform_context_is_injected_once_in_normal_and_plan(monkeypatch):
-    marker = "当前运行平台：Windows；命令 Shell：Windows PowerShell。"
-    monkeypatch.setattr("mewcode.agent.platform_context", lambda: marker)
+async def test_environment_and_plan_are_temporary_system_reminders(monkeypatch):
+    marker = "<system-reminder>环境标记</system-reminder>"
+
+    async def environment(*args, **kwargs):
+        return marker
+
+    monkeypatch.setattr("mewcode.agent.build_environment_reminder", environment)
     agent, provider, _ = _agent(
         [
             [StreamEvent.text_delta("完成"), StreamEvent.done()],
@@ -97,12 +101,17 @@ async def test_platform_context_is_injected_once_in_normal_and_plan(monkeypatch)
     await _collect(agent, "普通任务")
     await _collect(agent, "/plan 计划任务")
 
-    normal_prompt = provider.requests[0][0][0].text
-    plan_prompt = provider.requests[1][0][0].text
-    assert normal_prompt.count(marker) == 1
-    assert plan_prompt.count(marker) == 1
-    assert "计划模式" not in normal_prompt
-    assert "计划模式" in plan_prompt
+    normal_history = provider.requests[0][0]
+    plan_history = provider.requests[1][0]
+    assert normal_history[0].text == plan_history[0].text
+    assert [item.text for item in normal_history if item.text == marker] == [marker]
+    assert [item.text for item in plan_history if item.text == marker] == [marker]
+    assert not any("当前处于计划模式" in item.text for item in normal_history)
+    assert any("当前处于计划模式" in item.text for item in plan_history)
+    assert all(
+        item.kind.value != "system_reminder"
+        for item in agent.conversation.items
+    )
 
 
 async def test_multiround_tool_calls_continue_until_plain_text():
@@ -332,13 +341,13 @@ async def test_usage_snapshots_are_not_double_counted_across_rounds():
     agent, _, _ = _agent(
         [
             [
-                StreamEvent.token_usage(TokenUsage(10, 0)),
-                StreamEvent.token_usage(TokenUsage(10, 2)),
+                StreamEvent.token_usage(TokenUsage(10, 0, 3, 5)),
+                StreamEvent.token_usage(TokenUsage(10, 2, 4, 5)),
                 StreamEvent.tool_call(call),
                 StreamEvent.done(),
             ],
             [
-                StreamEvent.token_usage(TokenUsage(12, 5)),
+                StreamEvent.token_usage(TokenUsage(12, 5, 6, None)),
                 StreamEvent.text_delta("完成"),
                 StreamEvent.done(),
             ],
@@ -348,7 +357,64 @@ async def test_usage_snapshots_are_not_double_counted_across_rounds():
     events = await _collect(agent, "统计")
     usage = [event.usage for event in events if event.kind == AgentEventKind.USAGE_UPDATED]
 
-    assert usage[-1] == TokenUsage(22, 7)
+    assert usage[-1] == TokenUsage(22, 7, 10, 5)
+
+
+async def test_plan_full_reminder_repeats_on_rounds_1_6_11_16(monkeypatch):
+    async def environment(*args, **kwargs):
+        return "<system-reminder>环境</system-reminder>"
+
+    monkeypatch.setattr("mewcode.agent.build_environment_reminder", environment)
+    calls = [
+        ToolCall(str(index), "read_file", {"path": "a"})
+        for index in range(1, 18)
+    ]
+    agent, provider, _ = _agent(
+        [
+            [StreamEvent.tool_call(call), StreamEvent.done()]
+            for call in calls
+        ],
+        max_iterations=17,
+    )
+
+    events = await _collect(agent, "/plan 调查直到上限")
+
+    full_rounds = []
+    for index, (history, _) in enumerate(provider.requests, start=1):
+        reminders = [
+            item.text
+            for item in history
+            if item.kind.value == "system_reminder"
+        ]
+        assert len(reminders) == 2
+        if "具体、可执行且可验证" in reminders[1]:
+            full_rounds.append(index)
+    assert full_rounds == [1, 6, 11, 16]
+    assert events[-1].stop_reason == StopReason.ITERATION_LIMIT
+
+
+async def test_each_new_plan_task_restarts_with_full_reminder(monkeypatch):
+    async def environment(*args, **kwargs):
+        return "<system-reminder>环境</system-reminder>"
+
+    monkeypatch.setattr("mewcode.agent.build_environment_reminder", environment)
+    agent, provider, _ = _agent(
+        [
+            [StreamEvent.text_delta("计划一"), StreamEvent.done()],
+            [StreamEvent.text_delta("计划二"), StreamEvent.done()],
+        ]
+    )
+
+    await _collect(agent, "/plan 第一个任务")
+    await _collect(agent, "/plan 第二个任务")
+
+    for history, _ in provider.requests:
+        plan_reminder = next(
+            item.text
+            for item in history
+            if item.kind.value == "system_reminder" and "计划模式" in item.text
+        )
+        assert "具体、可执行且可验证" in plan_reminder
 
 
 async def test_plan_uses_read_only_tools_and_do_uses_all_tools():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .messages import ConversationItem, ConversationItemKind, Message, Role
 from .tools.models import ToolCall, ToolResult
 
@@ -47,11 +49,19 @@ class Conversation:
         """返回「system 消息 + 全部历史」，供 Provider.stream 使用。"""
         return [Message(Role.SYSTEM, self.system_prompt), *self.messages]
 
-    def build_history(self, system_prompt: str | None = None) -> list[ConversationItem]:
-        """返回含工具历史的协议无关上下文，供工具感知 Provider 使用。"""
+    def build_history(
+        self,
+        system_prompt: str | None = None,
+        system_reminders: Sequence[str] = (),
+    ) -> list[ConversationItem]:
+        """返回稳定系统项、当前补充项与持久历史，不保存补充项。"""
         return [
             ConversationItem.text_item(
                 ConversationItemKind.SYSTEM, system_prompt or self.system_prompt
+            ),
+            *(
+                ConversationItem.system_reminder(reminder)
+                for reminder in system_reminders
             ),
             *self.items,
         ]

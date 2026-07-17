@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import respx
 
@@ -10,7 +12,7 @@ from mewcode.messages import (
     StreamEventKind,
 )
 from mewcode.providers.anthropic import AnthropicProvider, _serialize
-from mewcode.tools.models import ToolCall, ToolResult
+from mewcode.tools.models import ToolCall, ToolDefinition, ToolResult
 
 SSE = (
     "event: content_block_delta\n"
@@ -57,6 +59,35 @@ async def test_anthropic_http_error_becomes_event():
     assert "401" in events[0].text
 
 
+@respx.mock
+async def test_anthropic_http_error_redacts_sensitive_fields():
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": {"message": "bad request"},
+                "x-api-key": "SENTINEL-KEY",
+                "reasoning_content": "SECRET-REASONING",
+            },
+        )
+    )
+    provider = AnthropicProvider(
+        ProviderConfig(
+            name="a",
+            protocol="anthropic",
+            model="m",
+            api_key="SENTINEL-KEY",
+        )
+    )
+
+    events = [event async for event in provider.stream([Message(Role.USER, "hi")])]
+
+    error = next(event.text for event in events if event.kind == StreamEventKind.ERROR)
+    assert "SENTINEL-KEY" not in error
+    assert "SECRET-REASONING" not in error
+    assert "bad request" in error
+
+
 def test_anthropic_serializes_preamble_and_tools_in_one_assistant_turn():
     call = ToolCall("call-1", "read_file", {"path": "a.txt"})
     history = [
@@ -69,7 +100,13 @@ def test_anthropic_serializes_preamble_and_tools_in_one_assistant_turn():
     ]
 
     system, messages = _serialize(history)
-    assert system == "sys"
+    assert system == [
+        {
+            "type": "text",
+            "text": "sys",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"][0] == {"type": "text", "text": "我先读取。"}
     assert messages[1]["content"][1]["type"] == "tool_use"
@@ -79,8 +116,8 @@ def test_anthropic_serializes_preamble_and_tools_in_one_assistant_turn():
 @respx.mock
 async def test_anthropic_stream_usage_snapshots():
     sse = (
-        'data: {"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}}\n\n'
-        'data: {"type":"message_delta","usage":{"output_tokens":7}}\n\n'
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}}\n\n'
+        'data: {"type":"message_delta","usage":{"output_tokens":7,"cache_read_input_tokens":3}}\n\n'
         'data: {"type":"message_stop"}\n\n'
     )
     respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -92,16 +129,25 @@ async def test_anthropic_stream_usage_snapshots():
 
     events = [ev async for ev in prov.stream([Message(Role.USER, "hi")])]
     usage = [ev.usage for ev in events if ev.kind == StreamEventKind.USAGE]
-    assert [(item.input_tokens, item.output_tokens) for item in usage if item] == [
-        (11, 0),
-        (11, 7),
+    assert [
+        (
+            item.input_tokens,
+            item.output_tokens,
+            item.cache_read_tokens,
+            item.cache_write_tokens,
+        )
+        for item in usage
+        if item
+    ] == [
+        (111, 0, 0, 100),
+        (114, 7, 3, 100),
     ]
 
 
 @respx.mock
 async def test_anthropic_invalid_usage_stays_unknown():
     sse = (
-        'data: {"type":"message_start","message":{"usage":{"input_tokens":true}}}\n\n'
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":true,"cache_creation_input_tokens":-1,"cache_read_input_tokens":true}}}\n\n'
         'data: {"type":"message_stop"}\n\n'
     )
     respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -116,3 +162,36 @@ async def test_anthropic_invalid_usage_stays_unknown():
     assert usage is not None
     assert usage.input_tokens is None
     assert usage.output_tokens is None
+    assert usage.cache_read_tokens is None
+    assert usage.cache_write_tokens is None
+
+
+@respx.mock
+async def test_anthropic_marks_only_stable_system_and_last_tool_for_cache():
+    route = respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, text='data: {"type":"message_stop"}\n\n')
+    )
+    provider = AnthropicProvider(
+        ProviderConfig(name="a", protocol="anthropic", model="m", api_key="k")
+    )
+    history = [
+        ConversationItem.text_item(ConversationItemKind.SYSTEM, "stable"),
+        ConversationItem.system_reminder(
+            "<system-reminder>dynamic</system-reminder>"
+        ),
+        ConversationItem.text_item(ConversationItemKind.USER, "hi"),
+    ]
+    tools = [
+        ToolDefinition("first", "one", {"type": "object"}),
+        ToolDefinition("second", "two", {"type": "object"}),
+    ]
+
+    [event async for event in provider.stream(history, tools)]
+
+    body = route.calls.last.request.content.decode()
+    assert '"text":"stable","cache_control":{"type":"ephemeral"}' in body
+    assert '"text":"<system-reminder>dynamic</system-reminder>"' in body
+    request = json.loads(body)
+    assert "cache_control" not in request["system"][1]
+    assert "cache_control" not in request["tools"][0]
+    assert request["tools"][1]["cache_control"] == {"type": "ephemeral"}

@@ -172,10 +172,31 @@ def test_openai_serializes_preamble_and_tool_calls_as_one_assistant_message():
     assert messages[3]["role"] == "tool"
 
 
+def test_openai_serializes_typed_reminder_as_system_but_user_tag_stays_user():
+    history = [
+        ConversationItem.text_item(ConversationItemKind.SYSTEM, "stable"),
+        ConversationItem.system_reminder(
+            "<system-reminder>dynamic</system-reminder>"
+        ),
+        ConversationItem.text_item(
+            ConversationItemKind.USER,
+            "<system-reminder>untrusted</system-reminder>",
+        ),
+    ]
+
+    messages = _serialize(history)
+
+    assert [message["role"] for message in messages] == [
+        "system",
+        "system",
+        "user",
+    ]
+
+
 @respx.mock
 async def test_openai_stream_usage_snapshot_and_request_option():
     sse = (
-        'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5}}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":8,"cache_write_tokens":4}}}\n\n'
         "data: [DONE]\n\n"
     )
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
@@ -191,8 +212,11 @@ async def test_openai_stream_usage_snapshot_and_request_option():
     assert usage[0] is not None
     assert usage[0].input_tokens == 12
     assert usage[0].output_tokens == 5
+    assert usage[0].cache_read_tokens == 8
+    assert usage[0].cache_write_tokens == 4
     request_body = json.loads(route.calls.last.request.content)
     assert request_body["stream_options"] == {"include_usage": True}
+    assert "cache_control" not in json.dumps(request_body)
 
 
 @respx.mock
@@ -210,6 +234,56 @@ async def test_openai_missing_usage_fields_stay_unknown():
     assert usage is not None
     assert usage.input_tokens is None
     assert usage.output_tokens is None
+    assert usage.cache_read_tokens is None
+    assert usage.cache_write_tokens is None
+
+
+@respx.mock
+async def test_openai_compatible_parses_deepseek_cache_hit_tokens():
+    sse = (
+        'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":2,"prompt_cache_hit_tokens":15}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    respx.post("https://compatible.local/chat/completions").mock(
+        return_value=httpx.Response(200, text=sse)
+    )
+    provider = OpenAIProvider(
+        ProviderConfig(
+            name="compatible",
+            protocol="openai",
+            model="m",
+            api_key="k",
+            base_url="https://compatible.local",
+        )
+    )
+
+    events = [event async for event in provider.stream([Message(Role.USER, "hi")])]
+    usage = next(event.usage for event in events if event.kind == StreamEventKind.USAGE)
+
+    assert usage is not None
+    assert usage.cache_read_tokens == 15
+    assert usage.cache_write_tokens is None
+
+
+@respx.mock
+async def test_openai_invalid_cache_details_stay_unknown_even_with_fallback():
+    sse = (
+        'data: {"choices":[],"usage":{"prompt_tokens":20,"prompt_tokens_details":{"cached_tokens":true},"prompt_cache_hit_tokens":15,"cache_write_tokens":-1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, text=sse)
+    )
+    provider = OpenAIProvider(
+        ProviderConfig(name="o", protocol="openai", model="m", api_key="k")
+    )
+
+    events = [event async for event in provider.stream([Message(Role.USER, "hi")])]
+    usage = next(event.usage for event in events if event.kind == StreamEventKind.USAGE)
+
+    assert usage is not None
+    assert usage.cache_read_tokens is None
+    assert usage.cache_write_tokens is None
 
 
 @pytest.mark.parametrize(

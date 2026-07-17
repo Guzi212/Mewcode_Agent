@@ -86,7 +86,7 @@ def build_default_registry() -> ToolRegistry:
     definitions = [
         (
             ToolDefinition(
-                "read_file", "读取 UTF-8 文本文件并返回带行号的内容。",
+                "read_file", "读取 UTF-8 文本文件并返回带行号的当前内容。编辑既有文件前必须先用本工具读取相关内容。",
                 {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False},
             ),
             AccessMode.READ,
@@ -95,7 +95,7 @@ def build_default_registry() -> ToolRegistry:
         ),
         (
             ToolDefinition(
-                "write_file", "创建或覆盖 UTF-8 文本文件，必要时创建父目录。",
+                "write_file", "创建或完整覆盖 UTF-8 文本文件，必要时创建父目录。主要用于新文件或明确的整文件替换；覆盖既有文件前必须先读取当前内容。",
                 {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"], "additionalProperties": False},
             ),
             AccessMode.WRITE,
@@ -104,7 +104,7 @@ def build_default_registry() -> ToolRegistry:
         ),
         (
             ToolDefinition(
-                "edit_file", "唯一匹配原文片段后替换文本；非唯一时不修改。",
+                "edit_file", "读取既有文件后，对唯一匹配的原文片段做精确替换；匹配失败或不唯一时不修改，不得改用整文件覆盖掩盖问题。",
                 {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"], "additionalProperties": False},
             ),
             AccessMode.WRITE,
@@ -113,7 +113,7 @@ def build_default_registry() -> ToolRegistry:
         ),
         (
             ToolDefinition(
-                "run_command", "在工作目录或经批准的目录执行 shell 命令。",
+                "run_command", "在工作目录或经批准的目录执行 shell 命令。不得替代已有的文件读取、查找、搜索或编辑专用工具；只依据实际命令结果声称成功。",
                 {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["command"], "additionalProperties": False},
             ),
             AccessMode.EXECUTE,
@@ -122,7 +122,7 @@ def build_default_registry() -> ToolRegistry:
         ),
         (
             ToolDefinition(
-                "find_files", "按 glob 模式查找文件。",
+                "find_files", "按 glob 模式查找文件。查找文件时优先使用本工具，不用 run_command 拼凑同等能力。",
                 {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"], "additionalProperties": False},
             ),
             AccessMode.READ,
@@ -131,7 +131,7 @@ def build_default_registry() -> ToolRegistry:
         ),
         (
             ToolDefinition(
-                "search_code", "在文本文件中搜索内容并返回文件、行号和命中行。",
+                "search_code", "在文本文件中搜索内容并返回文件、行号和命中行。搜索代码或文本时优先使用本工具，不用 run_command 拼凑同等能力。",
                 {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"], "additionalProperties": False},
             ),
             AccessMode.READ,

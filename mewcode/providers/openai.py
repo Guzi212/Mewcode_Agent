@@ -98,8 +98,17 @@ def _tool_calls(calls: tuple[ToolCall, ...]) -> list[dict]:
 def _serialize(history: list[ConversationItem]) -> list[dict]:
     messages: list[dict] = []
     for item in history:
-        if item.kind in {ConversationItemKind.SYSTEM, ConversationItemKind.USER}:
-            messages.append({"role": item.kind.value, "content": item.text})
+        if item.kind in {
+            ConversationItemKind.SYSTEM,
+            ConversationItemKind.SYSTEM_REMINDER,
+            ConversationItemKind.USER,
+        }:
+            role = (
+                "system"
+                if item.kind == ConversationItemKind.SYSTEM_REMINDER
+                else item.kind.value
+            )
+            messages.append({"role": role, "content": item.text})
         elif item.kind == ConversationItemKind.ASSISTANT:
             message: dict = {"role": "assistant", "content": item.text or None}
             if item.calls:
@@ -116,6 +125,22 @@ def _serialize(history: list[ConversationItem]) -> list[dict]:
         elif item.kind == ConversationItemKind.TOOL_RESULTS:
             messages.extend({"role": "tool", "tool_call_id": result.call_id, "content": _tool_output(result)} for result in item.results)
     return messages
+
+
+def _cache_usage(usage: dict) -> tuple[int | None, int | None]:
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and "cached_tokens" in details:
+        cache_read = _token_count(details.get("cached_tokens"))
+    else:
+        cache_read = _token_count(usage.get("prompt_cache_hit_tokens"))
+
+    if isinstance(details, dict) and "cache_write_tokens" in details:
+        cache_write = _token_count(details.get("cache_write_tokens"))
+    elif "cache_write_tokens" in usage:
+        cache_write = _token_count(usage.get("cache_write_tokens"))
+    else:
+        cache_write = _token_count(usage.get("prompt_cache_creation_tokens"))
+    return cache_read, cache_write
 
 
 class OpenAIProvider(Provider):
@@ -184,10 +209,13 @@ class OpenAIProvider(Provider):
                             continue
                         usage = obj.get("usage")
                         if isinstance(usage, dict):
+                            cache_read, cache_write = _cache_usage(usage)
                             yield StreamEvent.token_usage(
                                 TokenUsage(
                                     _token_count(usage.get("prompt_tokens")),
                                     _token_count(usage.get("completion_tokens")),
+                                    cache_read,
+                                    cache_write,
                                 )
                             )
                         choices = obj.get("choices") or []

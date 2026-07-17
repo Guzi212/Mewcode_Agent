@@ -24,10 +24,46 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 4096
 MAX_TOKENS_THINKING = 8192
 THINKING_BUDGET = 2048
+_SENSITIVE_ERROR_FIELDS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "reasoning_content",
+    "x-api-key",
+}
+
+
+def _redact_error_fields(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[已隐藏]"
+                if str(key).casefold() in _SENSITIVE_ERROR_FIELDS
+                else _redact_error_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_error_fields(item) for item in value]
+    return value
 
 
 def _http_error(resp: httpx.Response) -> str:
-    detail = (resp.text or "")[:300]
+    raw_detail = resp.text or ""
+    try:
+        detail = json.dumps(
+            _redact_error_fields(json.loads(raw_detail)),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except json.JSONDecodeError:
+        lowered = raw_detail.casefold()
+        detail = (
+            "响应详情已隐藏"
+            if any(field in lowered for field in _SENSITIVE_ERROR_FIELDS)
+            else raw_detail
+        )
+    detail = detail[:300]
     return f"请求失败（HTTP {resp.status_code}）：{detail}".rstrip("：").rstrip()
 
 
@@ -60,11 +96,21 @@ def _assistant_content(item: ConversationItem) -> str | list[dict]:
     return content
 
 
-def _serialize(history: list[ConversationItem]) -> tuple[str, list[dict]]:
-    system = "\n".join(item.text for item in history if item.kind == ConversationItemKind.SYSTEM)
+def _serialize(history: list[ConversationItem]) -> tuple[list[dict], list[dict]]:
+    system: list[dict] = []
     messages: list[dict] = []
     for item in history:
-        if item.kind == ConversationItemKind.USER:
+        if item.kind == ConversationItemKind.SYSTEM:
+            system.append(
+                {
+                    "type": "text",
+                    "text": item.text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        elif item.kind == ConversationItemKind.SYSTEM_REMINDER:
+            system.append({"type": "text", "text": item.text})
+        elif item.kind == ConversationItemKind.USER:
             messages.append({"role": "user", "content": item.text})
         elif item.kind == ConversationItemKind.ASSISTANT:
             messages.append({"role": "assistant", "content": _assistant_content(item)})
@@ -78,6 +124,30 @@ def _serialize(history: list[ConversationItem]) -> tuple[str, list[dict]]:
     return system, messages
 
 
+def _usage_snapshot(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_read_tokens: int | None,
+    cache_write_tokens: int | None,
+) -> TokenUsage:
+    known_input_parts = [
+        value
+        for value in (input_tokens, cache_read_tokens, cache_write_tokens)
+        if value is not None
+    ]
+    total_input = sum(known_input_parts) if known_input_parts else None
+    return TokenUsage(
+        total_input,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+    )
+
+
+def _updated_count(current: int | None, usage: dict, key: str) -> int | None:
+    return _token_count(usage[key]) if key in usage else current
+
+
 class AnthropicProvider(Provider):
     async def stream(
         self,
@@ -87,7 +157,7 @@ class AnthropicProvider(Provider):
         base = (self._cfg.base_url or DEFAULT_BASE_URL).rstrip("/")
         url = f"{base}/v1/messages"
 
-        system_text, convo = _serialize(normalize_history(history))
+        system_blocks, convo = _serialize(normalize_history(history))
 
         body: dict = {
             "model": self._cfg.model,
@@ -95,8 +165,8 @@ class AnthropicProvider(Provider):
             "messages": convo,
             "stream": True,
         }
-        if system_text:
-            body["system"] = system_text
+        if system_blocks:
+            body["system"] = system_blocks
         if self._cfg.thinking:
             body["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
         if tools:
@@ -104,6 +174,7 @@ class AnthropicProvider(Provider):
                 {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
                 for tool in tools
             ]
+            body["tools"][-1]["cache_control"] = {"type": "ephemeral"}
 
         headers = {
             "x-api-key": self._cfg.api_key,
@@ -121,6 +192,8 @@ class AnthropicProvider(Provider):
                     partial_calls: dict[int, dict[str, str]] = {}
                     input_tokens: int | None = None
                     output_tokens: int | None = None
+                    cache_read_tokens: int | None = None
+                    cache_write_tokens: int | None = None
                     async for payload in iter_sse(resp):
                         try:
                             obj = json.loads(payload)
@@ -132,20 +205,46 @@ class AnthropicProvider(Provider):
                             if isinstance(usage, dict):
                                 input_tokens = _token_count(usage.get("input_tokens"))
                                 output_tokens = _token_count(usage.get("output_tokens"))
+                                cache_read_tokens = _token_count(
+                                    usage.get("cache_read_input_tokens")
+                                )
+                                cache_write_tokens = _token_count(
+                                    usage.get("cache_creation_input_tokens")
+                                )
                                 yield StreamEvent.token_usage(
-                                    TokenUsage(input_tokens, output_tokens)
+                                    _usage_snapshot(
+                                        input_tokens,
+                                        output_tokens,
+                                        cache_read_tokens,
+                                        cache_write_tokens,
+                                    )
                                 )
                         elif etype == "message_delta":
                             usage = obj.get("usage")
                             if isinstance(usage, dict):
-                                latest_input = _token_count(usage.get("input_tokens"))
-                                latest_output = _token_count(usage.get("output_tokens"))
-                                if latest_input is not None:
-                                    input_tokens = latest_input
-                                if latest_output is not None:
-                                    output_tokens = latest_output
+                                input_tokens = _updated_count(
+                                    input_tokens, usage, "input_tokens"
+                                )
+                                output_tokens = _updated_count(
+                                    output_tokens, usage, "output_tokens"
+                                )
+                                cache_read_tokens = _updated_count(
+                                    cache_read_tokens,
+                                    usage,
+                                    "cache_read_input_tokens",
+                                )
+                                cache_write_tokens = _updated_count(
+                                    cache_write_tokens,
+                                    usage,
+                                    "cache_creation_input_tokens",
+                                )
                                 yield StreamEvent.token_usage(
-                                    TokenUsage(input_tokens, output_tokens)
+                                    _usage_snapshot(
+                                        input_tokens,
+                                        output_tokens,
+                                        cache_read_tokens,
+                                        cache_write_tokens,
+                                    )
                                 )
                         if etype == "content_block_start":
                             block = obj.get("content_block") or {}
